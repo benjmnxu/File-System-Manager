@@ -1,21 +1,22 @@
 use std::fs::{self, File};
 use std::path::Path;
 use std::rc::{Rc, Weak};
+use std::process::Command;
 use std::cell::{Ref, RefCell};
 use std::collections::{HashSet, VecDeque};
 
 use crate::system::{disown, prune, FileSystemNode};
 
 pub struct Kernel {
-    // root: Rc<RefCell<FileSystemNode>>,
+    root: Rc<RefCell<FileSystemNode>>,
     marked_for_deletion: VecDeque<Rc<RefCell<FileSystemNode>>>
 }
 
 impl Kernel {
 
-    pub fn new() -> Option<Self> {
+    pub fn new(root: Rc<RefCell<FileSystemNode>>) -> Option<Self> {
         Some(Kernel {
-            // root: root.clone(),
+            root: root.clone(),
             marked_for_deletion: VecDeque::new()
         })
     }
@@ -60,7 +61,7 @@ impl Kernel {
         
 
         println!("\nTotal storage used: {}", self.format_size(borrowed.size()));
-        println!("\nEnter an index to navigate into a directory, '..' to go up, 'mark <index>' to mark for deletion, 'commit' to delete marked files, or 'exit' to quit.");
+        println!("\nEnter an index to navigate into a directory, '..' to go up, 'del <index>' to mark for deletion, 'commit' to delete marked files, or 'exit' to quit.");
 
     }
 
@@ -84,8 +85,37 @@ impl Kernel {
         child
     }
 
-    pub fn go_to(&self, path: String) {
+    pub fn go_to(&self, path: String) -> Option<Rc<RefCell<FileSystemNode>>> {
+        let mut current_node = Some(self.root.clone());
+    
+        for address in path.split("/") {
+            if let Some(node) = current_node {
+                current_node = node.borrow().go_to(address);
+            } else {
+                return None;
+            }
+        }
+        current_node
+    }
 
+    pub fn get_status(&self) -> String {
+        let mut total_space_saved = 0;
+        let status: Vec<String> = self
+            .marked_for_deletion
+            .iter()
+            .map(|item| {
+                let borrowed_item = item.borrow();
+                let path = borrowed_item.get_path().to_string();
+                total_space_saved += borrowed_item.size();
+                path
+            })
+            .collect();
+
+        format!(
+            "The following are marked for deletion: {} \nTotal space saved: {}",
+            status.join(", "),
+            self.format_size(total_space_saved)
+        )
     }
 
     pub fn mark_for_deletion(&mut self, node: Rc<RefCell<FileSystemNode>>, index: usize) {
@@ -126,6 +156,32 @@ impl Kernel {
                     },
                     Err(e) => eprintln!("Failed to delete directory {}: {}", path, e),
                 }
+            }
+        }
+    }
+
+    pub fn open_file(&self, node: Rc<RefCell<FileSystemNode>>, index: usize) {
+        let child = node.borrow().get_child(index);
+        if let Some(child_node) = child {
+            let borrowed_node = child_node.borrow();
+            let file_path = borrowed_node.get_path();
+            if cfg!(target_os = "macos") {
+                Command::new("open")
+                    .arg(file_path)
+                    .spawn()
+                    .expect("Failed to open file");
+            // } else if cfg!(target_os = "windows") {
+            //     Command::new("cmd")
+            //         .args(&["/C", "start", "", file_path])
+            //         .spawn()
+            //         .expect("Failed to open file");
+            // } else if cfg!(target_os = "linux") {
+            //     Command::new("xdg-open")
+            //         .arg(file_path)
+            //         .spawn()
+            //         .expect("Failed to open file");
+            } else {
+                eprintln!("Unsupported operating system");
             }
         }
     }

@@ -61,6 +61,16 @@ impl FileSystemNode {
         Some(child)
     }
 
+    pub fn go_to(&self, name: &str) -> Option<Rc<RefCell<FileSystemNode>>> {
+        for child in &self.children {
+            if child.borrow().get_name() == name {
+                return Some(child.clone());
+            }
+        }
+
+        None
+    }
+
 
     pub fn is_marked(&self) -> bool {
         self.to_be_deleted
