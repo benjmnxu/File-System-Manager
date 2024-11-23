@@ -7,8 +7,44 @@ use std::sync::{Arc, Mutex};
 use std::os::unix::fs::MetadataExt;
 use rust::system::FileSystemNode;
 use rust::kernel::Kernel;
+use rust::gui;
 
-fn main() {
+use eframe::egui;
+
+fn main() -> Result<(), eframe::Error> {
+    gui::run_app()
+}
+
+#[derive(Default)]
+struct MyApp {
+    input_text: String,    // Text currently in the text field
+    displayed_text: String, // Text displayed when the button is clicked
+}
+
+impl eframe::App for MyApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Text Field with Button");
+
+            // Text input field
+            ui.label("Enter some text:");
+            ui.text_edit_singleline(&mut self.input_text);
+
+            // Button to capture and display the text
+            if ui.button("Submit").clicked() {
+                self.displayed_text = self.input_text.clone(); // Update displayed text
+            }
+
+            // Display the captured text
+            ui.label(format!("You submitted: {}", self.displayed_text));
+        });
+    }
+}
+
+
+
+
+fn handle_job() {
     let root_path = "/Users/benjaminxu/Desktop"; // Start from the current directory
     let visited_inodes: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
     let small_file_threshold = 1024; // Define threshold in bytes (e.g., 1 KB)
