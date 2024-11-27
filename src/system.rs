@@ -42,13 +42,12 @@ impl FileSystemNode {
     // pub fn get_children(&self) -> Vec<Rc<RefCell<FileSystemNode>>> {
     //     self.children
     // }
-    pub fn for_each_child<F>(&self, function: F)
+    pub fn for_each_child<F>(&self, mut function: F)
     where
-        F: Fn(usize, &Rc<RefCell<FileSystemNode>>),
+        F: FnMut(usize, &Rc<RefCell<FileSystemNode>>),
     {
-        let mut result = Vec::new();
         for (i, child) in self.children.iter().enumerate() {
-            result.push(function(i, child));
+            function(i, child);
         }
     }
 

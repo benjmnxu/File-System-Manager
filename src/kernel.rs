@@ -4,6 +4,7 @@ use std::rc::{Rc, Weak};
 use std::process::Command;
 use std::cell::{Ref, RefCell};
 use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use crate::system::{disown, prune, FileSystemNode};
 
@@ -14,11 +15,11 @@ pub struct Kernel {
 
 impl Kernel {
 
-    pub fn new(root: Rc<RefCell<FileSystemNode>>) -> Option<Self> {
-        Some(Kernel {
+    pub fn new(root: Rc<RefCell<FileSystemNode>>) -> Self {
+        Kernel {
             root: root.clone(),
             marked_for_deletion: VecDeque::new()
-        })
+        }
     }
 
     fn format_size(&self, size: u64) -> String {
@@ -40,30 +41,35 @@ impl Kernel {
         }
     }
 
-    pub fn display(&self, node: Rc<RefCell<FileSystemNode>>) {
-
+    pub fn display(&self, node: Rc<RefCell<FileSystemNode>>) -> String {
         let borrowed = node.borrow();
-        println!("\nCurrent Directory: {}", borrowed.get_path());
-
+        let mut display = format!("\nCurrent Directory: {}\n", borrowed.get_path());
+    
         borrowed.for_each_child(|i, child| {
             let child_node = child.borrow();
             if !child_node.is_marked() {
                 let node_type = if child_node.is_file() { "[File]" } else { "[Directory]" };
-                println!(
-                    "{}: {} ({} {})",
+                display.push_str(&format!(
+                    "{}: {} ({} {})\n",
                     i,
                     child_node.get_name(),
                     self.format_size(child_node.size()),
                     node_type
-                );
+                ));
             }
         });
-        
-
-        println!("\nTotal storage used: {}", self.format_size(borrowed.size()));
-        println!("\nEnter an index to navigate into a directory, '..' to go up, 'del <index>' to mark for deletion, 'commit' to delete marked files, or 'exit' to quit.");
-
+    
+        display.push_str(&format!(
+            "Total storage used: {}\n",
+            self.format_size(borrowed.size())
+        ));
+        display.push_str(
+            "Enter an index to navigate into a directory, '..' to go up, 'del <index>' to mark for deletion, 'commit' to delete marked files, or 'exit' to quit.\n",
+        );
+    
+        display
     }
+    
 
     pub fn get_parent(&self, node: Rc<RefCell<FileSystemNode>>) -> Option<Weak<RefCell<FileSystemNode>>> {
         node.borrow().get_parent()
