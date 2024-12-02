@@ -1,30 +1,58 @@
-use std::collections::{HashSet, VecDeque};
-use std::fs::{self, Metadata};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::{self, File, Metadata};
 use std::path::{Path, PathBuf};
-use std::rc::{Rc, Weak};
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
-use std::os::unix::fs::MetadataExt; // For Unix-based systems
+use std::sync::{Arc, Mutex, Weak};
+use std::os::unix::fs::MetadataExt;
+
+use crate::mac;
 
 #[derive(Debug)]
 pub struct FileSystemNode {
     name: String,
-    path: String,
+    path: PathBuf,
     is_file: bool,
     size: u64,
-    parent: Option<Weak<RefCell<FileSystemNode>>>, // Use Rc<RefCell<>> for parent
-    children: Vec<Rc<RefCell<FileSystemNode>>>,  // Use Rc<RefCell<>> for children
+    parent: Option<Weak<Mutex<FileSystemNode>>>,
+    children: Vec<Arc<Mutex<FileSystemNode>>>,
     to_be_deleted: bool,
 }
 
 impl FileSystemNode {
 
+    pub fn new(
+        name: String,
+        path: PathBuf,
+        is_file: bool,
+        size: u64,
+        parent: Option<Weak<Mutex<FileSystemNode>>>, // Use Rc<RefCell<>> for parent
+        children: Vec<Arc<Mutex<FileSystemNode>>>,  // Use Rc<RefCell<>> for children
+        to_be_deleted: bool) -> Self {
+            Self {
+                name,
+                path,
+                is_file,
+                size,
+                parent,
+                children,
+                to_be_deleted
+            }
+    }
+
     pub fn get_name(&self) -> &str {
         &self.name
     }
 
-    pub fn get_path(&self) -> &str {
+    pub fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    pub fn get_path(&self) -> &PathBuf {
         &self.path
+    }
+
+    pub fn set_path(&mut self, path: String) {
+        self.path = PathBuf::from(path);
     }
 
     pub fn is_file(&self) -> bool {
@@ -35,23 +63,28 @@ impl FileSystemNode {
         self.size
     }
 
-    pub fn get_parent(&self) -> Option<Weak<RefCell<FileSystemNode>>> {
+    pub fn get_parent(&self) -> Option<Weak<Mutex<FileSystemNode>>> {
         self.parent.clone()
     }
 
-    // pub fn get_children(&self) -> Vec<Rc<RefCell<FileSystemNode>>> {
-    //     self.children
-    // }
+    pub fn set_parent(&mut self, parent: Option<Weak<Mutex<FileSystemNode>>>) {
+        self.parent = parent;
+    }
+
+
+    pub fn add_child(&mut self, child: Arc<Mutex<FileSystemNode>>){
+        self.children.push(child);
+    }
     pub fn for_each_child<F>(&self, mut function: F)
     where
-        F: FnMut(usize, &Rc<RefCell<FileSystemNode>>),
+        F: FnMut(usize, &Arc<Mutex<FileSystemNode>>),
     {
         for (i, child) in self.children.iter().enumerate() {
             function(i, child);
         }
     }
 
-    pub fn get_child(&self, index: usize) -> Option<Rc<RefCell<FileSystemNode>>> { 
+    pub fn get_child(&self, index: usize) -> Option<Arc<Mutex<FileSystemNode>>> { 
         if index >= self.children.len() {
             return None;
         }
@@ -60,9 +93,13 @@ impl FileSystemNode {
         Some(child)
     }
 
-    pub fn go_to(&self, name: &str) -> Option<Rc<RefCell<FileSystemNode>>> {
+    pub fn remove_child(&self, path: String) {
+
+    }
+
+    pub fn go_to(&self, name: &str) -> Option<Arc<Mutex<FileSystemNode>>> {
         for child in &self.children {
-            if child.borrow().get_name() == name {
+            if child.lock().unwrap().get_name() == name {
                 return Some(child.clone());
             }
         }
@@ -83,88 +120,28 @@ impl FileSystemNode {
         self.to_be_deleted = true
     }
 
-
-    pub fn build_fs_model<P: AsRef<Path>>(
-        path: P,
-        visited_inodes: Arc<Mutex<HashSet<u64>>>,
-        small_file_threshold: u64, // Size threshold in bytes
-        parent: Option<Weak<RefCell<FileSystemNode>>>
-    ) -> Option<Rc<RefCell<Self>>> {
-        let path = path.as_ref();
-        let metadata = fs::symlink_metadata(path).ok()?;
-        let is_file = metadata.is_file();
-        let inode = metadata.ino(); // Get inode number (for Unix-based systems)
-
-        {
-            let mut visited = visited_inodes.lock().unwrap();
-            if visited.contains(&inode) {
-                return None;
-            }
-            visited.insert(inode);
-        }
-
-        let name = path.file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/".to_string());
-
-        let node = Rc::new(RefCell::new(Self {
-            name: name.clone(),
-            path: path.display().to_string(),
-            is_file,
-            size: metadata.len(),
-            parent: parent.clone(),
-            children: vec![],
-            to_be_deleted: false,
-        }));
-
-        if is_file {
-            return Some(node);
-        }
-
-        let entries = fs::read_dir(path).ok()?;
-        let mut total_size = 0;
-        let mut children = vec![];
-
-        for entry in entries.filter_map(|e| e.ok()) {
-            let child_path = entry.path();
-            if let Some(child_node) = Self::build_fs_model(
-                child_path,
-                Arc::clone(&visited_inodes),
-                small_file_threshold,
-                Some(Rc::downgrade(&node))
-            ) {
-                total_size += child_node.borrow().size;
-                children.push(child_node);
-            }
-        }
-
-        let mut node_mut = node.borrow_mut();
-        node_mut.size = total_size;
-        node_mut.children = children;
-        drop(node_mut);
-
-        Some(node)
+    pub fn undelete(&mut self) {
+        self.to_be_deleted = false
     }
 }
-
-pub fn disown(node: Rc<RefCell<FileSystemNode>>) {
+pub fn disown(node: Arc<Mutex<FileSystemNode>>) {
     // Remove self from parent's children if it exists
-    if let Some(parent_weak) = node.borrow().parent.as_ref() {
+    if let Some(parent_weak) = node.lock().unwrap().parent.as_ref() {
         if let Some(parent_rc) = parent_weak.upgrade() {
-            let mut parent_ref = parent_rc.borrow_mut();
+            let mut parent_ref = parent_rc.lock().unwrap();
             // Find and remove self from parent's children
-            if let Some(index) = parent_ref.children.iter().position(|child| Rc::ptr_eq(child, &node)) {
-                parent_ref.size -= node.borrow().size();
+            if let Some(index) = parent_ref.children.iter().position(|child| Arc::ptr_eq(child, &node)) {
+                parent_ref.size -= node.lock().unwrap().size();
                 parent_ref.children.remove(index);
             }
         }
     }
 }
 
-pub fn prune(node: Rc<RefCell<FileSystemNode>>) {
+pub fn prune(node: Arc<Mutex<FileSystemNode>>) {
     // Recursively prune children
     {
-        let children = node.borrow_mut().children.drain(..).collect::<Vec<_>>();
+        let children = node.lock().unwrap().children.drain(..).collect::<Vec<_>>();
         for child in children {
             prune(child);
         }
@@ -173,3 +150,48 @@ pub fn prune(node: Rc<RefCell<FileSystemNode>>) {
     disown(node);
 }
 
+pub async fn build_fs_model(paths: Vec<String>) -> Option<Arc<Mutex<FileSystemNode>>> {
+    let mut nodes: HashMap<String, Arc<Mutex<FileSystemNode>>> = HashMap::new();
+
+    for path_str in paths {
+        let path = PathBuf::from(&path_str);
+        println!("PATH {}", path.display());
+        let is_file = path.is_file();
+        let mut size = 0;
+
+        let name = path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".to_string());
+
+        let node: Arc<Mutex<FileSystemNode>> = Arc::new(Mutex::new(FileSystemNode {
+            name,
+            path: path.clone(),
+            is_file,
+            size,
+            parent: None,
+            children: vec![],
+            to_be_deleted: false
+        }));
+
+        nodes.insert(path_str.clone(), node.clone());
+
+        if let Some(parent_path) = path.parent() {
+            if let Some(parent_node) = nodes.get(parent_path.to_string_lossy().as_ref()) {
+                node.lock().unwrap().parent = Some(Arc::downgrade(parent_node));
+                parent_node.lock().unwrap().children.push(node.clone());
+            }
+        }
+    }
+
+    // Calculate directory sizes by summing child sizes
+    for node in nodes.values() {
+        let mut node_mut = node.lock().unwrap();
+        if !node_mut.is_file {
+            node_mut.size = node_mut.children.iter()
+                .map(|child| child.lock().unwrap().size)
+                .sum();
+        }
+    }
+
+    nodes.get("/").cloned()
+}

@@ -1,8 +1,8 @@
 use eframe::egui;
-use std::collections::HashSet;
-use std::rc::Rc;
-use std::sync::{mpsc, Arc, Mutex};
 use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 
 use crate::system::FileSystemNode;
 use crate::kernel::Kernel;
@@ -20,16 +20,8 @@ pub fn run_app(to_backend: mpsc::Sender<Command>, from_backend: mpsc::Receiver<B
 #[derive(Clone)]
 enum PageState {
     Home,
-    Load {
-        directory: String,
-        display_text: String,
-    },
-    Files {
-        directory: String,
-        display_text: String,
-        input_text: String,
-        response_text: String,
-    },
+    Load { directory: String, display_text: String },
+    Files { directory: String, display_text: String, input_text: String, response_text: String },
 }
 
 struct AppState {
@@ -43,42 +35,40 @@ impl Default for AppState {
         }
     }
 }
+
 struct MyApp {
     state: Rc<RefCell<AppState>>,
-    load_page: LoadPage,
-    files_page: FilesPage,
     to_backend: mpsc::Sender<Command>,
     from_backend: mpsc::Receiver<BackendResponse>,
 }
-
-#[derive(Default)]
-struct LoadPage;
-
-#[derive(Default)]
-struct FilesPage;
-
-impl eframe::App for MyApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let current_page = self.state.borrow().current_page.clone();
-        egui::CentralPanel::default().show(ctx, |ui| match current_page {
-            PageState::Home => self.show_home_page(ui),
-            PageState::Load { .. } => self.load_page.show(ui, Rc::clone(&self.state), &self.to_backend, &self.from_backend),
-            PageState::Files { .. } => self.files_page.show(ui, Rc::clone(&self.state), &self.to_backend, &self.from_backend),
-        });
-    }
-}
-
 
 impl MyApp {
     fn new(to_backend: mpsc::Sender<Command>, from_backend: mpsc::Receiver<BackendResponse>) -> Self {
         Self {
             state: Rc::new(RefCell::new(AppState::default())),
-            load_page: LoadPage::default(),
-            files_page: FilesPage::default(),
             to_backend,
-            from_backend
+            from_backend,
         }
     }
+}
+
+impl eframe::App for MyApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.handle_backend_responses();
+        
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let current_page = self.state.borrow().current_page.clone();
+            match current_page {
+                PageState::Home => self.show_home_page(ui),
+                PageState::Load { .. } => self.show_load_page(ui),
+                PageState::Files { .. } => self.show_files_page(ui),
+            }
+        });
+        ctx.request_repaint();
+    }
+}
+
+impl MyApp {
     fn show_home_page(&mut self, ui: &mut egui::Ui) {
         ui.heading("Home Page");
         if ui.button("Go to Load Page").clicked() {
@@ -96,163 +86,127 @@ impl MyApp {
             };
         }
     }
-}
 
-impl LoadPage {
-    fn show(
-        &self,
-        ui: &mut egui::Ui,
-        state: Rc<RefCell<AppState>>,
-        to_backend: &mpsc::Sender<Command>,
-        from_backend: &mpsc::Receiver<BackendResponse>,
-    ) {
-        // Render UI using the `directory` and `display_text` fields of the page state
-        ui.heading("Load");
-
-        {
-            let mut current_state = state.borrow_mut();
-            if let PageState::Load { directory, .. } = &mut current_state.current_page {
-                // Allow user to edit the `directory` directly
-                ui.text_edit_singleline(directory);
+    fn show_load_page(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Load Page");
+    
+        let (directory, display_text) = {
+            let mut state = self.state.borrow_mut();
+            if let PageState::Load { directory, display_text } = &mut state.current_page {
+                (directory.clone(), display_text.clone())
+            } else {
+                return; // Exit if not on the Load page
             }
+        };
+    
+        // Work with extracted values
+        let mut updated_directory = directory;
+        if ui.text_edit_singleline(&mut updated_directory).changed() {
+            self.state.borrow_mut().current_page = PageState::Load {
+                directory: updated_directory.clone(),
+                display_text: display_text.clone(),
+            };
         }
-
-        let load_clicked = ui.button("Load").clicked();
-        let back_to_home_clicked = ui.button("Back to Home").clicked();
-
-        // Handle "Load" button click
-        if load_clicked {
-            let mut current_state = state.borrow_mut();
-            if let PageState::Load { directory, display_text } = &mut current_state.current_page {
-                if directory.is_empty() {
+    
+        if ui.button("Load").clicked() {
+            let trimmed_dir = updated_directory.trim();
+            if trimmed_dir.is_empty() {
+                let mut state = self.state.borrow_mut();
+                if let PageState::Load { display_text, .. } = &mut state.current_page {
                     *display_text = "Please enter a valid directory.".to_string();
+                }
+            } else {
+                let command = Command::LoadDirectory(trimmed_dir.to_string());
+                if let Err(err) = self.to_backend.try_send(command) {
+                    let mut state = self.state.borrow_mut();
+                    if let PageState::Load { display_text, .. } = &mut state.current_page {
+                        *display_text = format!("Failed to send command: {}", err);
+                    }
                 } else {
-                    if let Err(err) = to_backend.send(Command::LoadDirectory(directory.clone())) {
-                        *display_text = format!("Failed to send command to backend: {}", err);
-                    }
+                    let mut state = self.state.borrow_mut();
+                    state.current_page = PageState::Files {
+                        directory: trimmed_dir.to_string(),
+                        display_text: String::new(),
+                        input_text: String::new(),
+                        response_text: String::new(),
+                    };
                 }
             }
         }
-
-        // Handle backend response
-        if let Ok(response) = from_backend.try_recv() {
-            let mut current_state = state.borrow_mut();
-            if let PageState::Load { directory, display_text } = &mut current_state.current_page {
-                match response {
-                    BackendResponse::Response(_) => {
-                        current_state.current_page = PageState::Files {
-                            directory: directory.clone(),
-                            display_text: String::new(),
-                            input_text: String::new(),
-                            response_text: String::new(),
-                        };
-                    }
-                    BackendResponse::Error(error) => {
-                        *display_text = format!("Error: {}", error);
-                    }
-                }
-            }
+    
+        if !display_text.is_empty() {
+            self.display_message(ui, &display_text);
         }
-
-        // Render feedback or error messages
-        {
-            let current_state = state.borrow();
-            if let PageState::Load { display_text, .. } = &current_state.current_page {
-                if !display_text.is_empty() {
-                    if display_text.contains("Error") {
-                        ui.colored_label(egui::Color32::RED, display_text);
-                    } else {
-                        ui.colored_label(egui::Color32::GREEN, display_text);
-                    }
-                }
-            }
-        }
-
-        // Handle "Back to Home" button click
-        if back_to_home_clicked {
-            let mut current_state = state.borrow_mut();
-            current_state.current_page = PageState::Home;
+    
+        if ui.button("Back to Home").clicked() {
+            let mut state = self.state.borrow_mut();
+            state.current_page = PageState::Home;
         }
     }
-}
-
-
-impl FilesPage {
-    fn show(
-        &self,
-        ui: &mut egui::Ui,
-        state: Rc<RefCell<AppState>>,
-        to_backend: &mpsc::Sender<Command>,
-        from_backend: &mpsc::Receiver<BackendResponse>,
-    ) {
-        // Access and modify the current page state
+        
+    fn show_files_page(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Files Page");
+    
         if let PageState::Files {
-            directory,
             display_text,
             input_text,
             response_text,
-        } = &mut state.borrow_mut().current_page
+            ..
+        } = &mut self.state.borrow_mut().current_page
         {
-            ui.heading("Files");
-
-            // Send a request to the backend if `display_text` is empty
-            if display_text.is_empty() {
-                if let Err(err) = to_backend.send(Command::Display) {
-                    *display_text = format!("Failed to send command to backend: {}", err);
-                }
-            }
-
-            // Check for backend response
-            while let Ok(response) = from_backend.try_recv() {
-                match response {
-                    BackendResponse::Response(text) => {
-                        display_text.push_str(&format!("{}\n", text));
-                    }
-                    BackendResponse::Error(error) => {
-                        *display_text = format!("Error: {}", error);
-                    }
-                }
-            }
-
-            // Create a scrollable area for `display_text`
-            let max_height = ui.available_height() * 0.8;
-            let max_width = ui.available_width() * 0.7; // Capture available width
-
+            // Display file content
             egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .max_height(max_height)
-                .max_width(max_width)
-                .stick_to_bottom(true)
+                .max_height(ui.available_height() * 0.9)
                 .show(ui, |ui| {
                     ui.label(display_text.clone());
                 });
-
-            // Add a taller input box for user commands with the same width as scroll area
-            let input_response = ui.add(
-                egui::TextEdit::singleline(input_text)
-                    .desired_width(max_width)
-                    .hint_text("Enter command...")
-                    .margin(egui::vec2(4.0, 10.0)), // Taller padding
-            );
-
-            // Handle "Enter" key to send commands to the backend
-            if input_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                if !input_text.trim().is_empty() {
-                    let command = parse_command(input_text.trim());
-                    to_backend.send(command).unwrap();
-                    input_text.clear(); // Clear input after sending the command
+    
+            // Input for commands
+            if ui.text_edit_singleline(input_text).lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                let trimmed_input = input_text.trim();
+                if !trimmed_input.is_empty() {
+                    let command = parse_command(trimmed_input);
+                    if let Err(err) = self.to_backend.try_send(command) {
+                        *response_text = format!("Error sending command: {}", err);
+                    }
+                    input_text.clear();
                 }
             }
-
-            // Display response or error messages
+            // Display response text
             if !response_text.is_empty() {
                 ui.label(egui::RichText::new(response_text.clone()).italics());
             }
         }
 
-        // Back to home button
         if ui.button("Back to Home").clicked() {
-            state.borrow_mut().current_page = PageState::Home;
+            self.state.borrow_mut().current_page = PageState::Home;
+        }
+    }
+    
+
+    fn display_message(&self, ui: &mut egui::Ui, message: &str) {
+        if message.contains("Error") {
+            ui.colored_label(egui::Color32::RED, message);
+        } else {
+            ui.colored_label(egui::Color32::GREEN, message);
+        }
+    }
+    fn handle_backend_responses(&mut self) {
+        while let Ok(response) = self.from_backend.try_recv() {
+            match response {
+                BackendResponse::Response(data) => {
+                    // Handle successful response, update state or UI
+                    if let PageState::Files { display_text, .. } = &mut self.state.borrow_mut().current_page {
+                        *display_text = data;
+                    }
+                }
+                BackendResponse::Error(error) => {
+                    // Handle backend error, update state or UI
+                    if let PageState::Load { display_text, .. } = &mut self.state.borrow_mut().current_page {
+                        *display_text = format!("Error: {}", error);
+                    }
+                }
+            }
         }
     }
 }
