@@ -20,7 +20,17 @@ Once cloned, there are three CLI flags to consider: `--gui-mode`, `--action-file
 
 It may also be importand to consider whether or not to run this application with `sudo`. This is highly dependent on your own filesystem and permissions setup.
 
-The first step should always be specifying the root on which the application should run (to scope the entire filesystem, input '/'). On the gui, do this by navigating to the Load Page and clicking 'load'. Using the cli, simply enter the desired location. This file load should be relatively quick depending on the size of your specified location and computer. On my hardware, I get the following results:
+The first step should always be specifying the root on which the application should run (to scope the entire filesystem, input '/'). On the gui, do this by navigating to the Load Page and clicking 'load'. Using the cli, simply enter the desired location. 
+
+On gui:
+
+![performance image](images/gui-load.png "Optional title")
+
+On cli:
+
+![performance image](images/cli-load.png "Optional title")
+
+This file load should be relatively quick depending on the size of your specified location and computer. On my hardware, I get the following results:
 
 ![performance image](images/performance.png "Optional title")
 
