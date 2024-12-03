@@ -48,7 +48,7 @@ After loading the filesystem, you will have access to the following commands:
 9. `create folder <name>` - Creates a folder with the specified name.
 10. `del <index>` - Deletes the item at the specified index.
 11. `open <index>` - Opens the item at the specified index.
-12. `move <source> > <destination>` - Moves an item from source to destination.
+12. `move <source> > <destination>` - Moves an item from source into destination directory.
 13. `help` - Displays this help message.
 ```
 
