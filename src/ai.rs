@@ -136,7 +136,6 @@ pub struct CreateDirectory {
 }
 
 pub fn parse_ai(json_input: &str) -> Vec<AICommand> {
-    // Parse JSON into a vector of commands
     let commands: Vec<AICommand> = match serde_json::from_str(json_input) {
         Ok(parsed) => parsed,
         Err(e) => {

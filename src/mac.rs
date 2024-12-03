@@ -17,10 +17,8 @@ pub fn fetch_file_system_with_getattrlistbulk_parallel(path: &str) -> Vec<(Strin
     let mut visited_directories = HashSet::new();
 
     while !directories_to_process.is_empty() {
-        // Retain unique directories
         directories_to_process.retain(|dir| visited_directories.insert(dir.clone()));
 
-        // Use Rayon to process directories in parallel
         let results_clone = Arc::clone(&results);
 
         let new_directories: Vec<String> = directories_to_process
@@ -28,7 +26,7 @@ pub fn fetch_file_system_with_getattrlistbulk_parallel(path: &str) -> Vec<(Strin
             .flat_map(|dir_path| {
                 if dir_path.ends_with(".framework") {
                     // println!("Skipping .framework directory: {}", dir_path);
-                    return Vec::new(); // Skip .framework directories
+                    return Vec::new();
                 }
 
                 let dir_results = fetch_file_system_with_getattrlistbulk(&dir_path);
@@ -127,7 +125,6 @@ fn fetch_file_system_with_getattrlistbulk(path: &str) -> Vec<(String, u64, bool)
                     eprintln!("Buffer overrun detected");
                     break;
                 }
-                
 
                 let entry = buffer_ptr.add(offset) as *const u8;
 
