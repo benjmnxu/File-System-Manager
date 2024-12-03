@@ -18,7 +18,7 @@ pub fn run_app(to_backend: mpsc::Sender<Command>, from_backend: mpsc::Receiver<B
 enum PageState {
     Home,
     Load { directory: String, display_text: String },
-    Files { directory: String, display_text: String, input_text: String, response_text: String, ai_input: String, ai_output: String},
+    Files { display_text: String, input_text: String, response_text: String, ai_input: String, ai_output: String},
 }
 
 struct AppState {
@@ -76,7 +76,6 @@ impl MyApp {
         }
         if ui.button("Go to Files Page").clicked() {
             self.state.borrow_mut().current_page = PageState::Files {
-                directory: String::new(),
                 display_text: String::new(),
                 input_text: String::new(),
                 response_text: String::new(),
@@ -124,7 +123,6 @@ impl MyApp {
                 } else {
                     let mut state = self.state.borrow_mut();
                     state.current_page = PageState::Files {
-                        directory: trimmed_dir.to_string(),
                         display_text: String::new(),
                         input_text: String::new(),
                         response_text: String::new(),
