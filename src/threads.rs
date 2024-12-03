@@ -15,10 +15,14 @@ pub enum Command {
     GoTo(String),
     Exit,
     Error(String),
+    AISuggestion(String),
+    AIConfirm,
+    Help,
 }
 
 pub enum BackendResponse {
     Response(String),
+    AIResponse(String),
     Error(String),
 }
 
@@ -38,10 +42,6 @@ pub async fn send_command(to_gui: &mpsc::Sender<BackendResponse>, message: Strin
     if let Err(err) = to_gui.send(BackendResponse::Response(message)).await {
         eprintln!("Failed to send response to GUI: {}", err);
     }
-}
-
-pub fn read_message(from_gui: &mpsc::Receiver<Command>) {
-
 }
 
 pub fn parse_command(input: &str) -> Command {
@@ -106,12 +106,18 @@ pub fn parse_command(input: &str) -> Command {
             if paths_vec.len() != 2 {
                 Command::Error("Invalid command".to_string())
             } else {
-                Command::Move(paths_vec[0].to_string(), paths_vec[1].to_string())
+                Command::Move(paths_vec[0].trim().to_string(), paths_vec[1].trim().to_string())
             }
         } else {
             Command::Error("Invalid command".to_string())
         }
+    } else if input == "help" {
+        Command::Help   
     } else {
         Command::Error("Invalid command".to_string())
     }
 }
+
+// pub fn ai_command(input: &str) -> String{
+
+// }

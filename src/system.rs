@@ -1,9 +1,6 @@
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::{self, File, Metadata};
-use std::path::{Path, PathBuf};
-use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
-use std::os::unix::fs::MetadataExt;
 
 use crate::mac;
 
@@ -63,6 +60,10 @@ impl FileSystemNode {
         self.size
     }
 
+    pub fn set_size(&mut self, size: u64) {
+        self.size = size;
+    }
+
     pub fn get_parent(&self) -> Option<Weak<Mutex<FileSystemNode>>> {
         self.parent.clone()
     }
@@ -93,8 +94,27 @@ impl FileSystemNode {
         Some(child)
     }
 
-    pub fn remove_child(&self, path: String) {
+    pub fn remove_child(&mut self, path: String) {
+        // Find the index of the child to remove
+        let mut index = -1;
+        let mut i = 0;
+        while i < self.children_len() {
+            let s = self.children[i].lock().unwrap().get_path().to_string_lossy().to_string();
+            if s == path {
+                index = i as i16;
+                break;
+            }
+            i+=1;
+        }
 
+        // Remove the child if found
+        if index != -1{
+            let size = self.children[index as usize].lock().unwrap().size();
+            self.children.remove(index as usize);
+            self.size -= size;
+        } else {
+            println!("Child with path '{}' not found.", path);
+        }
     }
 
     pub fn go_to(&self, name: &str) -> Option<Arc<Mutex<FileSystemNode>>> {
@@ -125,16 +145,16 @@ impl FileSystemNode {
     }
 }
 pub fn disown(node: Arc<Mutex<FileSystemNode>>) {
-    // Remove self from parent's children if it exists
-    if let Some(parent_weak) = node.lock().unwrap().parent.as_ref() {
-        if let Some(parent_rc) = parent_weak.upgrade() {
-            let mut parent_ref = parent_rc.lock().unwrap();
-            // Find and remove self from parent's children
-            if let Some(index) = parent_ref.children.iter().position(|child| Arc::ptr_eq(child, &node)) {
-                parent_ref.size -= node.lock().unwrap().size();
-                parent_ref.children.remove(index);
-            }
-        }
+    // Lock the node once to access its parent and path
+    let (parent_weak, node_path) = {
+        let node_ref = node.lock().unwrap();
+        (node_ref.parent.clone(), node_ref.get_path().to_string_lossy().to_string())
+    };
+
+    // If the parent exists, remove the node from the parent's children
+    if let Some(parent_rc) = parent_weak.and_then(|weak| weak.upgrade()) {
+        let mut parent_ref = parent_rc.lock().unwrap();
+        parent_ref.remove_child(node_path);
     }
 }
 
@@ -149,49 +169,84 @@ pub fn prune(node: Arc<Mutex<FileSystemNode>>) {
 
     disown(node);
 }
-
-pub async fn build_fs_model(paths: Vec<String>) -> Option<Arc<Mutex<FileSystemNode>>> {
+pub async fn build_fs_model(path: String) -> Option<Arc<Mutex<FileSystemNode>>> {
+    // Initialize a map to store nodes by path
     let mut nodes: HashMap<String, Arc<Mutex<FileSystemNode>>> = HashMap::new();
+    let root = Arc::new(Mutex::new(FileSystemNode {
+        name: path.clone(),
+        path: PathBuf::from(path.clone()),
+        is_file: false,
+        size: 0,
+        parent: None,
+        children: vec![],
+        to_be_deleted: false,
+    }));
 
-    for path_str in paths {
-        let path = PathBuf::from(&path_str);
-        println!("PATH {}", path.display());
-        let is_file = path.is_file();
-        let mut size = 0;
+    nodes.insert(path.clone(), root.clone());
+    // Fetch the filesystem structure in parallel
+    let mut all_results = Vec::new();
+    let results = mac::fetch_file_system_with_getattrlistbulk_parallel(&path);
+    all_results.extend(results);
+    
 
-        let name = path.file_name()
+    // Populate nodes map with results
+    for (entry_path, size, is_file) in all_results {
+        let path_buf = PathBuf::from(&entry_path);
+        let name = path_buf
+            .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "/".to_string());
 
-        let node: Arc<Mutex<FileSystemNode>> = Arc::new(Mutex::new(FileSystemNode {
+        let node = Arc::new(Mutex::new(FileSystemNode {
             name,
-            path: path.clone(),
+            path: path_buf.clone(),
             is_file,
             size,
             parent: None,
             children: vec![],
-            to_be_deleted: false
+            to_be_deleted: false,
         }));
 
-        nodes.insert(path_str.clone(), node.clone());
+        nodes.insert(entry_path.clone(), node);
+    }
 
-        if let Some(parent_path) = path.parent() {
-            if let Some(parent_node) = nodes.get(parent_path.to_string_lossy().as_ref()) {
-                node.lock().unwrap().parent = Some(Arc::downgrade(parent_node));
-                parent_node.lock().unwrap().children.push(node.clone());
+    // Link children to their parent nodes
+    for (entry_path, node) in &nodes {
+        let path_buf = PathBuf::from(entry_path);
+        if let Some(parent_path) = path_buf.parent() {
+            let parent_path_str = parent_path.to_string_lossy().to_string();
+            if let Some(parent_node) = nodes.get(&parent_path_str) {
+                let mut parent_lock = parent_node.lock().unwrap();
+                let mut node_lock = node.lock().unwrap();
+                node_lock.parent = Some(Arc::downgrade(parent_node));
+                parent_lock.children.push(Arc::clone(node));
             }
         }
     }
 
-    // Calculate directory sizes by summing child sizes
-    for node in nodes.values() {
-        let mut node_mut = node.lock().unwrap();
-        if !node_mut.is_file {
-            node_mut.size = node_mut.children.iter()
-                .map(|child| child.lock().unwrap().size)
-                .sum();
-        }
+    // Aggregate directory sizes
+    populate_size(root.clone());
+    Some(root)
+}
+
+pub fn populate_size(node: Arc<Mutex<FileSystemNode>>) {
+    let mut total_size = node.lock().unwrap().size;
+
+    // Lock the node once to get the children
+    let children: Vec<Arc<Mutex<FileSystemNode>>> = {
+        let locked_node = node.lock().unwrap();
+        locked_node.children.clone() // Clone the child references to avoid holding the lock
+    };
+
+    // Recursively populate size for each child
+    for child in children {
+        populate_size(child.clone());
+        total_size += child.lock().unwrap().size; // Accumulate the size
     }
 
-    nodes.get("/").cloned()
+    // Lock the node again to update its size
+    {
+        let mut locked_node = node.lock().unwrap();
+        locked_node.size = total_size;
+    }
 }

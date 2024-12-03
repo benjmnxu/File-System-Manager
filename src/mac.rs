@@ -1,27 +1,15 @@
-use std::collections::HashMap;
 use std::os::unix::fs::FileTypeExt;
-use std::path::{Path, PathBuf};
-use std::rc::{Rc, Weak};
-use std::cell::RefCell;
-use tokio::process::Command;
 use std::fs;
-
-use std::sync::{Arc};
-use std::time::Duration;
-use parking_lot::{Mutex};
-use std::thread::sleep;
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::collections::HashSet;
-
 use rayon::prelude::*;
-use rayon::current_num_threads;
-use std::time::Instant;
 use std::ffi::CStr;
-use walkdir::WalkDir;
 use std::os::raw::c_void;
 use libc::*;
 use std::mem;
 
-fn fetch_file_system_with_getattrlistbulk_parallel(path: &str) -> Vec<(String, u64, bool)> {
+pub fn fetch_file_system_with_getattrlistbulk_parallel(path: &str) -> Vec<(String, u64, bool)> {
     println!("Processing directory: {}", path);
 
     let results = Arc::new(Mutex::new(Vec::new()));

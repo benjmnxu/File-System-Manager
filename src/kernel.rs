@@ -1,10 +1,11 @@
-use std::fs::{self, File};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::system::{disown, prune, FileSystemNode};
+use crate::ai;
 
 enum KernelAction {
     CREATE {
@@ -23,16 +24,22 @@ enum KernelAction {
 pub struct Kernel {
     root: Arc<Mutex<FileSystemNode>>,
     // marked_for_deletion: Vec<Rc<Mutex<FileSystemNode>>>,
-    actions: VecDeque<KernelAction>
+    actions: VecDeque<KernelAction>,
+    ai_suggestion: String,
+    action_file: bool,
+    dry:bool
 }
 
 impl Kernel {
 
-    pub fn new(root: Arc<Mutex<FileSystemNode>>) -> Self {
+    pub fn new(root: Arc<Mutex<FileSystemNode>>, action_file: bool, dry: bool) -> Self {
         Kernel {
             root: root.clone(),
             // marked_for_deletion: Vec::new(),
-            actions: VecDeque::new()
+            actions: VecDeque::new(),
+            ai_suggestion: String::new(),
+            action_file,
+            dry
         }
     }
 
@@ -78,9 +85,6 @@ impl Kernel {
             "Total storage used: {}\n",
             self.format_size(borrowed.size())
         ));
-        display.push_str(
-            "Enter an index to navigate into a directory, '..' to go up, 'del <index>' to mark for deletion, 'commit' to delete marked files, or 'exit' to quit.\n",
-        );
     
         display
     }
@@ -89,6 +93,7 @@ impl Kernel {
     pub fn get_parent(&self, node: Arc<Mutex<FileSystemNode>>) -> Option<Weak<Mutex<FileSystemNode>>> {
         node.lock().unwrap().get_parent()
     }
+
 
     pub fn get_child(&self, node: Arc<Mutex<FileSystemNode>>, index: usize) -> Option<Arc<Mutex<FileSystemNode>>> {
         let borrowed = node.lock().unwrap();
@@ -106,45 +111,109 @@ impl Kernel {
         child
     }
 
-    pub fn go_to(&self, path: String) -> Option<Arc<Mutex<FileSystemNode>>> {
+    pub fn get_index(&self, node: Arc<Mutex<FileSystemNode>>, child: String) -> Option<usize> {
+        let borrowed = node.lock().unwrap();
+        let mut i = 0;
+        let l = borrowed.children_len();
+        let path = PathBuf::from(child);
+
+        while i < l {
+            if let Some(child) = borrowed.get_child(i) {
+                if *child.lock().unwrap().get_path() == path {
+                    return Some(i);
+                }
+            }
+            i +=1 ;
+        }
+        None
+    }
+
+    pub fn set_suggestion(&mut self, suggestion: String) {
+        self.ai_suggestion = suggestion;
+    }
+
+    pub fn get_suggestion(&self) -> String {
+        self.ai_suggestion.clone()
+    }
+
+    pub fn convert_suggestions(&mut self, node: Arc<Mutex<FileSystemNode>>) {
+        let commands = ai::parse_ai(&self.ai_suggestion);
+        for command in commands {
+            match command {
+                ai::AICommand::DeleteFile { delete_file } => {
+                    let index = self.get_index(node.clone(), delete_file.path);
+                    if let Some(i) = index {
+                        self.mark_for_deletion(node.clone(), i);
+                    }
+                }
+                ai::AICommand::MoveItem { move_item } => {
+                    self.move_item(move_item.original_location, move_item.new_location);
+                }
+                ai::AICommand::CreateDirectory { create_directory } => {
+                    self.create(node.clone(), create_directory.path, false);
+                }
+            }
+        }
+    }
+
+    pub fn go_to(&self, mut path: String) -> Option<Arc<Mutex<FileSystemNode>>> {
         let mut current_node = Some(self.root.clone());
     
-        for address in path.split("/") {
+        // Adjust the path to be relative if it starts with the root's path
+        let relative_path = if let Some(root_node) = &current_node {
+            let root_str = root_node.lock().unwrap().get_path().to_string_lossy().to_string();
+            if path.starts_with(&root_str) {
+                path.split_off(root_str.len())
+            } else {
+                path
+            }
+        } else {
+            path // Default to the original path if no root node is found
+        };
+    
+        // Iterate through the components of the path
+        for address in relative_path.split('/').filter(|part| !part.is_empty()) {
             if let Some(node) = current_node {
                 current_node = node.lock().unwrap().go_to(address);
             } else {
                 return None;
             }
         }
+    
         current_node
     }
+    
 
     pub fn get_status(&self) -> String {
         let mut total_space_saved = 0;
+        let mut index = 0;
         let status: Vec<String> = self
             .actions
             .iter()
             .map(|item| {
-                match item {
-                    KernelAction::CREATE { path, is_file } => {
-                        path.to_string_lossy().to_string()
+                
+                let action = match item {
+                    KernelAction::CREATE { path, is_file: _ } => {
+                        format!("[{}] CREATE: {}", index, path.to_string_lossy().to_string())
                     }
                     KernelAction::DELETE { target  } => {
                         let borrowed_item = target.lock().unwrap();
                         let path = borrowed_item.get_path().to_string_lossy();
                         total_space_saved += borrowed_item.size();
-                        path.to_string()
+                        format!("[{}] DELETE: {} ({})", index, path.to_string(), self.format_size(borrowed_item.size()))
                     }
                     KernelAction::MOVE { original_path, new_path } => {
-                        original_path.clone()
+                        format!("[{}] MOVE: {} -> {}", index, original_path.clone(), new_path.clone())
                     }
-                }
+                };
+                index+=1;
+                action
             })
             .collect();
 
         format!(
-            "The following are marked for action: {} \nTotal space saved: {}",
-            status.join(", "),
+            "The following are marked for action: \n {} \nTotal space saved: {}",
+            status.join("\n"),
             self.format_size(total_space_saved)
         )
     }
@@ -157,19 +226,14 @@ impl Kernel {
         }
     }
 
+
     pub fn undo_deletion(&mut self, index: usize) {
 
         match &self.actions[index] {
-
-            KernelAction::CREATE { path, is_file } => {
-
-            }
             KernelAction::DELETE {target} => {
                 target.lock().unwrap().undelete();
             }
-            KernelAction::MOVE { original_path, new_path } => {
-
-            }
+            _=>{}
         }
         self.actions.remove(index);
     }
@@ -177,9 +241,30 @@ impl Kernel {
     pub fn commit_actions(&mut self) {
         while let Some(action) = self.actions.pop_front() {
             match action {
-                KernelAction::CREATE { path, is_file } => self.commit_creation(path, is_file),
-                KernelAction::DELETE { target } => self.commit_deletion(target),
-                KernelAction::MOVE { original_path, new_path } => self.commit_move(original_path, new_path)
+                KernelAction::CREATE { path, is_file } => {
+                    if !self.dry {
+                        self.commit_creation(path.clone(), is_file)
+                    }
+                    if self.action_file {
+                        let _ = fs::write("changes.txt", format!("CREATE {}", path.clone().display()));
+                    }
+                }
+                KernelAction::DELETE { target } => {
+                    if !self.dry {
+                        self.commit_deletion(target.clone());
+                    }
+                    if self.action_file {
+                        let _ = fs::write("changes.txt", format!("DELETE {}", target.lock().unwrap().get_path().display()));
+                    }
+                }
+                KernelAction::MOVE { original_path, new_path } => {
+                    if !self.dry {
+                        self.commit_move(original_path.clone(), new_path.clone());
+                    }
+                    if self.action_file {
+                        let _ = fs::write("changes.txt", format!("MOVE {} > {}", original_path.clone(), new_path.clone()));
+                    }
+                }
             }
         }
     }
@@ -215,7 +300,6 @@ impl Kernel {
     }
 
     pub fn commit_creation(&mut self, path: PathBuf, is_file: bool) {
-        println!("CREATING {}", path.display());
         if is_file {
             let _ = fs::write(&path, "");
         } else {
@@ -261,13 +345,13 @@ impl Kernel {
             current = self.root.clone();
             path_so_far = PathBuf::new();
         }
+
         let addresses: Vec<&str> = path.split("/").collect();
         let n = addresses.len();
 
         let mut i = 0;
         while i < n {
             let address = addresses[i];
-            path_so_far.push("/");
             path_so_far.push(address);
             if address == ".." {
                 let mut parent = None;
@@ -301,33 +385,57 @@ impl Kernel {
             }
             i+=1;
         }
+
         self.actions.push_back(KernelAction::CREATE { path: path_so_far.to_path_buf(), is_file });
     }
 
     pub fn move_item(&mut self, original_path: String, new_path: String) {
+    
         if let Some(node) = self.go_to(original_path.clone()) {
-            if let Some(weak_parent) = node.lock().unwrap().get_parent() {
-                if let Some(strong_parent) = weak_parent.upgrade() {
-                    strong_parent.lock().unwrap().remove_child(original_path.clone());
-                }
+    
+            let parent = {
+                let node_ref = node.lock().unwrap();
+                node_ref.get_parent().and_then(|weak_parent| weak_parent.upgrade())
+            };
+    
+            if let Some(parent_arc) = parent {
+                let mut parent_ref = parent_arc.lock().unwrap();
+                parent_ref.remove_child(original_path.clone());
+    
+                let size = parent_ref.size();
+                parent_ref.set_size(size - node.lock().unwrap().size());
+            } else {
+                println!("Parent not found for node with path: {}", original_path);
             }
-
-            if let Some(new_node) = self.go_to(new_path.clone()) {
-                if let Some(weak_parent) = new_node.lock().unwrap().get_parent() {
-                    node.lock().unwrap().set_parent(Some(weak_parent.clone()));
-                    if let Some(strong_parent) = weak_parent.upgrade() {
-                        strong_parent.lock().unwrap().add_child(node.clone());
-                    }
-                }
-            }
-            
-            node.lock().unwrap().set_path(new_path.clone());
-            let name = Path::new(&new_path).file_name()
+    
+            // Append the item's name to the new path
+            let item_name = Path::new(&original_path)
+                .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "/".to_string());
-            node.lock().unwrap().set_name(name);
+                .unwrap_or_else(|| "".to_string());
+            let final_new_path = Path::new(&new_path)
+                .join(item_name.clone())
+                .to_string_lossy()
+                .into_owned();
+    
+            if let Some(new_node) = self.go_to(new_path.clone()) {
+                new_node.lock().unwrap().add_child(node.clone());
+                let size = new_node.lock().unwrap().size();
+                new_node.lock().unwrap().set_size(size + node.lock().unwrap().size());
+                node.lock().unwrap().set_parent(Some(Arc::downgrade(&new_node)));
+            } else {
+                println!("New parent not found for path: {}", new_path);
+            }
+    
+            node.lock().unwrap().set_path(final_new_path.clone());
+            node.lock().unwrap().set_name(item_name.clone());
+    
+            // Push the final new path to actions
+            self.actions.push_back(KernelAction::MOVE {
+                original_path,
+                new_path: final_new_path,
+            });
         }
-        self.actions.push_back(KernelAction::MOVE { original_path, new_path });
-        
     }
+    
 }

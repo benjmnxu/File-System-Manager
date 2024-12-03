@@ -1,481 +1,564 @@
-use std::os::unix::fs::FileTypeExt;
-// use std::collections::{HashSet, VecDeque};
-// use std::fs::{self, Metadata};
-// use std::path::{Path, PathBuf};
-// use std::rc::Rc;
-// use std::cell::RefCell;
-use std::sync::{Arc};
-use std::time::Duration;
-use parking_lot::{Mutex};
-use std::thread::sleep;
+use std::sync::{Arc, Mutex};
+use clap::Parser;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::BufReader;
+use tokio::sync::mpsc;
 
+use rust::system::*;
+use rust::kernel::Kernel;
+use rust::gui;
+use rust::threads::*;
+use rust::ai;
 
-// // use rayon::prelude::*;
-// use std::os::unix::fs::MetadataExt;
-// use tokio::sync::mpsc;
-// use std::thread;
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    /// Enable GUI mode
+    #[arg(long)]
+    gui_mode: bool,
 
-// use rust::system::*;
-// use rust::kernel::Kernel;
-// use rust::gui;
-// use rust::threads::*;
+    /// Enable dry run
+    #[arg(long)]
+    dry: bool,
 
-// #[tokio::main]
-// async fn main() {
-//     let (to_backend, mut from_gui) = mpsc::channel(32);
-//     let (to_gui, from_backend) = mpsc::channel(32);
-
-//     let backend_handle = tokio::spawn(async move {
-//         run_backend(&mut from_gui, &to_gui).await;
-//     });
-
-//     // Start the GUI application in the main thread
-//     gui::run_app(to_backend, from_backend).unwrap();
-
-//     // Wait for the backend task to finish
-//     backend_handle.await.unwrap();
-// }
-
-
-// enum BackendState {
-//     Uninitialized,
-//     Initialized {
-//         fs_root: Arc<Mutex<FileSystemNode>>,
-//         kernel: Arc<Mutex<Kernel>>,
-//         current_node: Arc<Mutex<FileSystemNode>>,
-//     },
-// }
-
-// async fn run_backend(from_gui: &mut mpsc::Receiver<Command>, to_gui: &mpsc::Sender<BackendResponse>) {
-//     println!("RUNNING BACKEND");
-//     let visited_inodes: Arc<Mutex<HashSet<(u64, u64)>>> = Arc::new(Mutex::new(HashSet::new()));
-//     let small_file_threshold = 1024; // Define threshold in bytes (e.g., 1 KB)
-//     let mut state = BackendState::Uninitialized;
-
-//     loop {
-//         println!("top");
-//         match from_gui.recv().await {
-//             Some(command) => { 
-//                 println!("ASDF");
-//                 match &mut state {
-//                 BackendState::Uninitialized => match command {
-//                     Command::LoadDirectory(path) => {
-//                         println!("here");
-//                         let mut input =  Vec::new();
-//                         input.push(path);
-//                         match build_fs_model(
-//                             input.clone()
-//                         ).await {
-//                             Some(fs_root) => {
-//                                 let root = fs_root;
-//                                 let kernel = Arc::new(Mutex::new(Kernel::new(root.clone())));
-//                                 state = BackendState::Initialized {
-//                                     fs_root: root.clone(),
-//                                     kernel,
-//                                     current_node: root,
-//                                 };
-//                                 send_response(&to_gui, format!("Directory loaded: {}", input[0])).await;
-//                             }
-//                             None => send_error(&to_gui, "Failed to load directory.".to_string()).await,
-//                         }
-//                     }
-//                     Command::Exit => {
-//                         println!("here2");
-//                         send_response(&to_gui, "Exiting backend.".to_string());
-//                         break;
-//                     }
-//                     _ => {
-//                         println!("here3");
-//                         send_error(&to_gui, "Load a directory before issuing commands.".to_string());
-//                     }
-//                 },
-//                 BackendState::Initialized {
-//                     fs_root,
-//                     kernel,
-//                     current_node,
-//                 } => {
-//                     handle_command(command, fs_root.clone(), kernel.clone(), current_node, &to_gui);
-//                 }
-//             }},
-//             None => break, // Handle sender disconnect
-//         }
-//     }
-// }
-
-// fn handle_command(
-//     command: Command,
-//     fs_root: Arc<Mutex<FileSystemNode>>,
-//     kernel: Arc<Mutex<Kernel>>,
-//     current_node: &mut Arc<Mutex<FileSystemNode>>,
-//     to_gui: &mpsc::Sender<BackendResponse>,
-// ) {
-//     match command {
-//         Command::Del(index) => {
-//             kernel.lock().unwrap().mark_for_deletion(current_node.clone(), index);
-//             send_response(&to_gui, format!("Marked index {} for deletion.", index));
-//         }
-//         Command::Create(path, is_file) => {
-//             kernel.lock().unwrap().create(current_node.clone(), path.clone(), is_file);
-//             send_response(&to_gui, format!("Marked {} for creation.", path));
-//         }
-//         Command::Move(original_path, new_path) => {
-//             kernel.lock().unwrap().move_item(original_path.clone(), new_path.clone());
-//             send_response(&to_gui, format!("Marked {} to move to {}.", original_path, new_path));
-//         }
-//         Command::Undo(index) => {
-//             kernel.lock().unwrap().undo_deletion(index);
-//             send_response(&to_gui, format!("Unmarked index {} for deletion.", index));
-//         }
-//         Command::Display => {
-//             let display = kernel.lock().unwrap().display(current_node.clone());
-//             send_response(&to_gui, display);
-//         }
-//         Command::Up => {
-//             if let Some(parent) = kernel.lock().unwrap().get_parent(current_node.clone()) {
-//                 let upgraded = parent.upgrade().expect("Error unwrapping parent upgrade");
-//                 *current_node = upgraded;
-//                 send_response(&to_gui, "Moved up to parent directory.".to_string());
-//             } else {
-//                 send_error(&to_gui, "Already at the root directory.".to_string());
-//             }
-//         }
-//         Command::Down(index) => {
-//             if let Some(child_node) = kernel.lock().unwrap().get_child(current_node.clone(), index) {
-//                 *current_node = child_node;
-//                 send_response(to_gui, "Navigated to child directory.".to_string());
-//             } else {
-//                 send_error(to_gui, "Invalid child index.".to_string());
-//             }
-//         }
-//         Command::Commit => {
-//             kernel.lock().unwrap().commit_actions();
-//             send_response(to_gui, "Committed deletions".to_string());
-//         }
-//         Command::Status => {
-//             let status = kernel.lock().unwrap().get_status();
-//             send_response(to_gui, status);
-//         }
-//         Command::GoTo(path) => {
-//             if let Some(node) = kernel.lock().unwrap().go_to(path.to_string()) {
-//                 *current_node = node;
-//                 send_response(to_gui, format!("Navigated to {}", path).to_string());
-//             } else {
-//                 send_error(to_gui, "Invalid path.".to_string());
-//             }
-//         }
-//         Command::Open(index) => {
-//             kernel.lock().unwrap().open_file(current_node.clone(), index);
-//         }
-//         // Handle other commands (Down, Status, Commit, etc.)
-//         Command::Exit => {
-//             send_response(&to_gui, "Exiting backend.".to_string());
-//         }
-//         _ => {
-//             send_error(&to_gui, "Command not implemented.".to_string());
-//         }
-//     }
-// }
-
-
-// // fn run_backend(from_gui: mpsc::Receiver<Command>, to_gui: mpsc::Sender<BackendResponse>) {
-// //     let visited_inodes: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
-// //     let small_file_threshold = 1024; // Define threshold in bytes (e.g., 1 KB)
-// //     let mut fs_root = None;
-// //     let mut kernel = None;
-// //     let mut current_node = None;
-
-// //     loop {
-// //         match from_gui.recv() {
-// //             Ok(command) => match command {
-// //                 Command::LoadDirectory(path) => {
-// //                     if fs_root.is_none() {
-// //                         fs_root = FileSystemNode::build_fs_model(
-// //                             &path,
-// //                             Arc::clone(&visited_inodes),
-// //                             small_file_threshold,
-// //                             None,
-// //                         );
-// //                         if let Some(ref root) = fs_root {
-// //                             current_node = Some(root.clone());
-// //                             kernel = Kernel::new(root.clone());
-// //                             to_gui
-// //                                 .send(BackendResponse::Response(format!(
-// //                                     "Directory loaded: {}",
-// //                                     path
-// //                                 )))
-// //                                 .unwrap();
-// //                         } else {
-// //                             to_gui
-// //                                 .send(BackendResponse::Error(
-// //                                     "Failed to load directory.".to_string(),
-// //                                 ))
-// //                                 .unwrap();
-// //                         }
-// //                     } else {
-// //                         to_gui
-// //                             .send(BackendResponse::Error(
-// //                                 "Directory already loaded.".to_string(),
-// //                             ))
-// //                             .unwrap();
-// //                     }
-// //                 }
-// //                 Command::Del(index) => {
-// //                     if let Some(kernel) = &mut kernel {
-// //                         if let Some(current_node) = &current_node {
-// //                             kernel.mark_for_deletion(current_node.clone(), index);
-// //                             to_gui
-// //                                 .send(BackendResponse::Response(format!(
-// //                                     "Marked index {} for deletion.",
-// //                                     index
-// //                                 )))
-// //                                 .unwrap();
-// //                         } else {
-// //                             to_gui
-// //                                 .send(BackendResponse::Error(
-// //                                     "No directory loaded.".to_string(),
-// //                                 ))
-// //                                 .unwrap();
-// //                         }
-// //                     } else {
-// //                         to_gui
-// //                             .send(BackendResponse::Error(
-// //                                 "Kernel not initialized.".to_string(),
-// //                             ))
-// //                             .unwrap();
-// //                     }
-// //                 }
-// //                 Command::Commit => {
-
-// //                 }
-// //                 Command::Display => {
-// //                     if let Some(kernel) = &kernel {
-// //                         let display = kernel.display(fs_root.clone().unwrap());
-// //                         to_gui
-// //                             .send(BackendResponse::Response(display.to_string()))
-// //                             .unwrap();
-// //                     } else {
-// //                         to_gui
-// //                             .send(BackendResponse::Error(
-// //                                 "Nothing to display; no directory loaded.".to_string(),
-// //                             ))
-// //                             .unwrap();
-// //                     }
-// //                 }
-// //                 Command::Up => {
-// //                     if let Some(parent) = kernel.get_parent(current_node.clone()) {
-// //                         current_node = parent.upgrade().expect("Error unwrapping parent upgrade");
-// //                     }
-// //                 }
-// //                 Command::Down(index) => {
-
-// //                 }
-// //                 Command::Status => {
-
-// //                 }
-// //                 Command::Open(index) => {
-
-// //                 }
-// //                 Command::GoTo(index) => {
-
-// //                 }
-// //                 Command::Exit => {
-// //                     to_gui.send(BackendResponse::Response("Exiting backend.".to_string())).unwrap();
-// //                     break;
-// //                 }
-// //                 Command::Error(message) => {
-
-// //                 }
-// //             },
-// //             Err(_) => {
-// //                 // Handle the sender being disconnected
-// //                 break;
-// //             }
-// //         }
-// //     }
-// // }
-
-
-// // pub fn handle_job(root_path: &str) {
-// //     // let root_path = "/Users/benjaminxu/Desktop";
-// //     let visited_inodes: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
-// //     let small_file_threshold = 1024; // Define threshold in bytes (e.g., 1 KB)
-// //     if let Some(fs_root) = FileSystemNode::build_fs_model(root_path, visited_inodes, small_file_threshold, None) {
-// //         if let Some(mut kernel) = Kernel::new(fs_root.clone()) {    
-// //             let mut current_node = fs_root;
-// //             let mut redisplay = true;
-// //             loop {
-// //                 if redisplay {
-// //                     kernel.display(current_node.clone());
-// //                 }
-// //                 let mut input = String::new();
-// //                 std::io::stdin().read_line(&mut input).expect("Failed to read input");
-// //                 let input = input.trim();
-        
-// //                 if input == "exit" {
-// //                     break;
-// //                 } else if input == ".." {
-// //                     if let Some(parent) = kernel.get_parent(current_node.clone()) {
-// //                         current_node = parent.upgrade().expect("Error unwrapping parent upgrade");
-// //                     }
-// //                     redisplay = true;
-// //                 } else if input == "commit" {
-// //                     kernel.commit_deletions();
-// //                     redisplay = false;
-// //                 } else if input.starts_with("del ") {
-// //                     if let Ok(index) = input[4..].trim().parse::<usize>() {
-// //                         kernel.mark_for_deletion(current_node.clone(), index);
-// //                         kernel.display(current_node.clone());
-// //                     } else {
-// //                         println!("Invalid input for del command.");
-// //                     }
-// //                     redisplay = true;
-// //                 } else if input == "status" {
-// //                   let status = kernel.get_status();
-// //                   println!("{}\n", status);  
-// //                   redisplay = false;
-// //                 } else if let Ok(index) = input.parse::<usize>() {
-// //                     if let Some(child_node) = kernel.get_child(current_node.clone(), index) {
-// //                         current_node = child_node;
-// //                     }
-// //                     redisplay = true;
-// //                 } else if input.starts_with("open ") {
-// //                     if let Ok(index) = input[5..].trim().parse::<usize>() {
-// //                         kernel.open_file(current_node.clone(), index);
-// //                     } else {
-// //                         println!("Invalid input for del command.");
-// //                     }
-// //                     redisplay = false;
-// //                 } else if input.starts_with("go to ") {
-// //                     if let Ok(path) = input[6..].trim().parse::<String>() {
-// //                         if let Some(node) = kernel.go_to(path) {
-// //                             current_node = node;
-// //                             redisplay = true;
-// //                         } else {
-// //                             println!("Invalid path.");
-// //                             redisplay = false;
-// //                         }
-// //                     } else {
-// //                         println!("Invalid input for go to command.");
-// //                         redisplay = false;
-// //                     }
-// //                 } else {
-// //                     println!("Invalid input.");
-// //                 }
-// //             }
-// //         } else {
-
-// //         }
-// //     } else {
-// //         eprintln!("Error reading file system.");
-// //     }
-// // }
-use rayon::prelude::*;
-use rayon::current_num_threads;
-use std::time::Instant;
-use std::ffi::CStr;
-use walkdir::WalkDir;
-use std::process::Command;
-use std::os::raw::c_void;
-use libc::*;
-use std::mem;
-
-
-fn fetch_file_system_with_walkdir(path: &str) -> Vec<(String, u64, bool)> {
-    WalkDir::new(path)
-        .into_iter()
-        .par_bridge() // Parallelize the iterator
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let metadata = entry.metadata().ok()?;
-            let is_file = metadata.is_file();
-            let size = if is_file { metadata.len() } else { 0 };
-            Some((entry.path().to_string_lossy().to_string(), size, is_file))
-        })
-        .collect()
+    // actions
+    #[arg(long)]
+    action_file: bool
 }
 
-fn fetch_file_system_with_exec(path: &str) -> Vec<(String, u64, bool)> {
-    let output = Command::new("find")
-        .arg(path)
-        .arg("-ls")
-        .output()
-        .expect("Failed to execute find");
+#[tokio::main]
+async fn main() {
+    // Parse command-line arguments
+    let cli = Cli::parse();
+    println!("Parsed CLI arguments: {:?}", cli);
+    println!("Dry: {}", cli.dry);
+    println!("GUI mode: {}", cli.gui_mode);
+    
+    if cli.gui_mode {
+        let (to_backend, mut from_gui) = mpsc::channel(32);
+        let (to_gui, from_backend) = mpsc::channel(32);
 
-    if !output.status.success() {
-        eprintln!("Find command failed: {:?}", output.status);
-        return Vec::new();
+        let backend_handle = tokio::spawn(async move {
+            run_backend(&mut from_gui, &to_gui, cli.dry, cli.action_file).await;
+        });
+
+        // Start the GUI application in the main thread
+        gui::run_app(to_backend, from_backend).unwrap();
+
+        // Wait for the backend task to finish
+        backend_handle.await.unwrap();
+    } else {
+        lone_run_backend(cli.dry, cli.action_file).await;
     }
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 11 {
-                return None;
+
+enum BackendState {
+    Uninitialized,
+    Initialized {
+        kernel: Arc<Mutex<Kernel>>,
+        current_node: Arc<Mutex<FileSystemNode>>,
+    },
+}
+
+async fn run_backend(from_gui: &mut mpsc::Receiver<Command>, to_gui: &mpsc::Sender<BackendResponse>, dry: bool, action_file: bool) {
+    let mut state = BackendState::Uninitialized;
+
+    loop {
+        match from_gui.recv().await {
+            Some(command) => match &mut state {
+                BackendState::Uninitialized => match command {
+                    Command::LoadDirectory(path) => {
+                        match build_fs_model(path.clone()).await {
+                            Some(fs_root) => {
+                                let kernel = Arc::new(Mutex::new(Kernel::new(fs_root.clone(), action_file, dry)));
+                                state = BackendState::Initialized {
+                                    kernel: kernel.clone(),
+                                    current_node: fs_root,
+                                };
+                                send_response(&to_gui, format!("Directory loaded: {}", path)).await;
+                            }
+                            None => {
+                                send_error(&to_gui, "Failed to load directory.".to_string()).await;
+                            }
+                        }
+                    }
+                    Command::Exit => break,
+                    _ => {
+                        send_error(&to_gui, "Load a directory before issuing commands.".to_string()).await;
+                    }
+                },
+                BackendState::Initialized {kernel, current_node } => {
+                    let updated_node = handle_command(
+                        command,
+                        kernel.clone(),
+                        current_node.clone(),
+                        &to_gui,
+                    )
+                    .await;
+                    *current_node = updated_node;
+                }
+            },
+            None => break, // Handle sender disconnect
+        }
+    }
+}
+
+
+async fn handle_command(
+    command: Command,
+    kernel: Arc<Mutex<Kernel>>,
+    current_node: Arc<Mutex<FileSystemNode>>,
+    to_gui: &mpsc::Sender<BackendResponse>,
+) -> Arc<Mutex<FileSystemNode>> {
+    println!("Handling command");
+
+    match command {
+        Command::Del(index) => {
+            {
+            let mut kernel_guard = kernel.lock().unwrap();
+            kernel_guard.mark_for_deletion(current_node.clone(), index);
             }
-            let size = parts[6].parse::<u64>().ok()?;
-            let path = parts[10..].join(" ");
-            let is_file = !path.ends_with('/');
-            Some((path, size, is_file))
-        })
-        .collect()
-}
+            send_response(to_gui, format!("Marked index {} for deletion.", index)).await;
+        }
+        Command::Create(path, is_file) => {
+            {
+            let mut kernel_guard = kernel.lock().unwrap();
+            
+            kernel_guard.create(current_node.clone(), path.clone(), is_file);
+            }
+            send_response(to_gui, format!("Created {}.", path)).await;
+        }
+        Command::Move(original_path, new_path) => {
+            {
+                let mut kernel_guard = kernel.lock().unwrap();
+            
+                // Get absolute paths
+                let abs_original_path = if original_path.starts_with('/') {
+                    original_path.to_string()
+                } else {
+                    let mut abs_path = current_node.lock().unwrap().get_path().to_string_lossy().to_string();
+                    abs_path.push('/');
+                    abs_path.push_str(&original_path);
+                    abs_path
+                };
+            
+                let abs_new_path = if new_path.starts_with('/') {
+                    new_path.to_string()
+                } else {
+                    let mut abs_path = current_node.lock().unwrap().get_path().to_string_lossy().to_string();
+                    abs_path.push('/');
+                    abs_path.push_str(&new_path);
+                    abs_path
+                };
+            
+                // Perform the move
+                kernel_guard.move_item(abs_original_path.clone(), abs_new_path.clone());
+            }
 
-// const VDIR: u32 = 1; // Directory
-const VREG: u32 = 1; // Regular file
+            println!("Asdf");
+        
+            // Send response
+            send_response(to_gui, format!("Moved {} to {}.", original_path, new_path)).await;
+        }
+        
+        Command::Undo(index) => {
+            {let mut kernel_guard = kernel.lock().unwrap();
+            kernel_guard.undo_deletion(index);}
+            send_response(to_gui, format!("Undid deletion of index {}.", index)).await;
+        }
+        Command::Display => {
+            let display = {
+                let kernel_guard = kernel.lock().unwrap();
+                kernel_guard.display(current_node.clone())
+            };
+            send_response(to_gui, display).await;
+        }
+        Command::Up => {
+            let (response, new_node) = {
+                let kernel_guard = kernel.lock().unwrap(); // Lock the kernel
+                if let Some(parent) = kernel_guard.get_parent(current_node.clone()) {
+                    if let Some(upgraded) = parent.upgrade() {
+                        ("Moved up to parent directory.".to_string(), Some(upgraded)) // Success case
+                    } else {
+                        ("Error upgrading parent reference.".to_string(), None) // Failed to upgrade
+                    }
+                } else {
+                    ("Already at the root directory.".to_string(), None) // No parent exists
+                }
+            }; // End of the scope for the lock
+        
+            if let Some(new_node) = new_node {
+                send_response(to_gui, response).await;
+                return new_node; // Return the updated parent node
+            } else {
+                send_error(to_gui, response).await;
+            }
+        
+        }
+        Command::Down(index) => {
+            let (response, child) = {
+                let kernel_guard = kernel.lock().unwrap();
+                if let Some(child_node) = kernel_guard.get_child(current_node.clone(), index) {
+                    ("Moved down to child directory.".to_string(), Some(child_node))
+                } else {
+                    ("Invalid child index.".to_string(), None)
+                }
+            };
 
-fn main() {
+            if let Some(new_node) = child {
+                send_response(to_gui, response).await;
+                return new_node; // Return the updated parent node
+            } else {
+                send_error(to_gui, response).await;
+            }
+        }
+        Command::Commit => {
+            {let mut kernel_guard = kernel.lock().unwrap();
+            kernel_guard.commit_actions();}
+            send_response(to_gui, "Committed all actions.".to_string()).await;
+        }
+        Command::Status => {
+            let status = {
+                let kernel_guard = kernel.lock().unwrap();
+                kernel_guard.get_status()
+            };
+            send_response(to_gui, status).await;
+        }
+        Command::GoTo(path) => {
+            let (response, node) = {
+                let kernel_guard = kernel.lock().unwrap();
+                if let Some(node) = kernel_guard.go_to(path.clone()) {
+                    (format!("Navigated to {}.", path), Some(node))
+                } else {
+                    (format!("Invalid path: {}.", path), None)
+                }
+            };
 
-    let path = "/";
+            if let Some(new_node) = node {
+                send_response(to_gui, response).await;
+                return new_node;
+            } else {
+                send_error(to_gui, response).await;
+            }
 
-    println!("Benchmarking getattrlistbulk...");
-    let start = Instant::now();
-    let getattrlistbulk_results = fetch_file_system_with_getattrlistbulk_parallel(path);
-    let getattrlistbulk_duration = start.elapsed();
-    println!("GetAttrListBulk Duration: {:?}", getattrlistbulk_duration);
+        }
+        Command::Open(index) => {
+            {let kernel_guard = kernel.lock().unwrap();
+            kernel_guard.open_file(current_node.clone(), index);}
+            send_response(to_gui, format!("Opened file at index {}.", index)).await;
+        }
+        Command::Help => {
+            let help_message = r#"
+        Available Commands:
+        1. `..` - Moves up one level.
+        2. `<index>` - Moves down to the child at the specified index.
+        3. `go to <path>` - Navigates to the specified path.
+        4. `commit` - Commits the current state.
+        5. `undo <index>` - Reverts to a specific commit index.
+        6. `status` - Displays the current status.
+        7. `display` - Displays content or structure at the current level.
+        8. `create file <name>` - Creates a file with the specified name.
+        9. `create folder <name>` - Creates a folder with the specified name.
+        10. `del <index>` - Deletes the item at the specified index.
+        11. `open <index>` - Opens the item at the specified index.
+        12. `move <source> > <destination>` - Moves an item from source to destination.
+        13. `help` - Displays this help message.
+        "#;
+            send_response(to_gui, help_message.to_string()).await;
+        }
+        Command::AISuggestion(input) => {
+            let context = {
+                let kernel_guard = kernel.lock().unwrap();
+                kernel_guard.display(current_node.clone())
+            };
+            let response = ai::ask(input, context).await;
+            
+            let suggestion: String = {
+                if let Some(sug) = response {
+                    kernel.lock().unwrap().set_suggestion(sug.clone());
+                    sug
+                } else {
+                    "No Suggestions".to_string()
+                }
+            };
 
-    // // Benchmark WalkDir
-    // println!("Benchmarking WalkDir...");
-    // let start = Instant::now();
-    // let walkdir_results = fetch_file_system_with_walkdir(path);
-    // let walkdir_duration = start.elapsed();
-    // println!("WalkDir Duration: {:?}", walkdir_duration);
+            let _ = to_gui.send(BackendResponse::AIResponse(suggestion)).await;
 
-    // // Benchmark find
-    // println!("Benchmarking find...");
-    // let start = Instant::now();
-    // let find_results = fetch_file_system_with_exec(path);
-    // let find_duration = start.elapsed();
-    // println!("Find Duration: {:?}", find_duration);
+        }
+        Command::AIConfirm => {
+            {kernel.lock().unwrap().convert_suggestions(current_node.clone());}
 
-    // Benchmark getattrlistbulk
-
-    // // Validate results
-    // println!("WalkDir Results Count: {}", walkdir_results.len());
-
-    // let mut sum = 0;
-    // for r in walkdir_results {
-    //     sum += r.1;
-    // }
-    // println!("Find Results Count: {}", find_results.len());
-    println!("GetAttrListBulk Results Count: {}", getattrlistbulk_results.len());
-
-    let mut gsum: u128 = 0;
-    for r in getattrlistbulk_results {
-        gsum += r.1 as u128;
+            let _ = to_gui.send(BackendResponse::AIResponse("Applied suggestions (Still needs to be committed)".to_string())).await;
+            
+        }
+        Command::Exit => {
+            send_response(to_gui, "Exiting backend.".to_string()).await;
+        }
+        _ => {
+            send_error(to_gui, "Unknown command.".to_string()).await;
+        }
     }
 
-    println!(" {}", gsum);
+    // Return the current node if no change
+    current_node
 }
 
-fn compare_results(walkdir_results: Vec<String>, getattrlistbulk_results: Vec<(String, u64, bool)>) {
-    let walkdir_paths: HashSet<_> = walkdir_results.into_iter().collect();
-    let getattrlistbulk_paths: HashSet<_> = getattrlistbulk_results.into_iter().map(|(p, _, _)| p).collect();
 
-    let only_in_walkdir = walkdir_paths.difference(&getattrlistbulk_paths);
-    let only_in_getattrlistbulk = getattrlistbulk_paths.difference(&walkdir_paths);
+async fn lone_run_backend(dry: bool, action_file: bool) {
+    let mut state = BackendState::Uninitialized;
+    let stdin = tokio::io::stdin(); // Use tokio's async stdin
+    let mut reader = BufReader::new(stdin).lines();
 
-    println!("Entries only in WalkDir: {:?}", only_in_walkdir);
-    println!("Entries only in GetAttrListBulk: {:?}", only_in_getattrlistbulk);
+    println!("Backend is running. Enter commands:");
+
+    while let Some(input) = reader.next_line().await.unwrap_or_else(|_| None) {
+        if input.is_empty() {
+            continue; // Skip empty lines
+        }
+
+        match &mut state {
+            BackendState::Uninitialized => {
+                let command = Command::LoadDirectory(input);
+                match command {
+                    Command::LoadDirectory(path) => {
+                        match build_fs_model(path.clone()).await {
+                            Some(fs_root) => {
+                                let kernel = Arc::new(Mutex::new(Kernel::new(fs_root.clone(), action_file, dry)));
+                                state = BackendState::Initialized {
+                                    kernel: kernel.clone(),
+                                    current_node: fs_root,
+                                };
+                                println!("Directory loaded: {}", path);
+                            }
+                            None => {
+                                println!("{}", "Failed to load directory.");
+                            }
+                        }
+                    }
+                    Command::Exit => {
+                        println!("Exiting backend...");
+                        break;
+                    }
+                    _ => {
+                        println!("Load a directory before issuing commands.");
+                    }
+                }
+            },
+            BackendState::Initialized {
+                kernel,
+                current_node,
+            } => {
+                let command = parse_command(&input);
+                match command {
+                    Command::Exit => {
+                        println!("Exiting backend...");
+                        break;
+                    }
+                    _ => {
+                        let updated_node = sync_handle_command(
+                            command,
+                            kernel.clone(),
+                            current_node.clone(),
+                        )
+                        .await;
+                        *current_node = updated_node;
+                    }
+                }
+            }
+        }
+    }
+}
+async fn sync_handle_command(
+    command: Command,
+    kernel: Arc<Mutex<Kernel>>,
+    current_node: Arc<Mutex<FileSystemNode>>,
+) -> Arc<Mutex<FileSystemNode>> {
+    println!("Handling command");
+
+    match command {
+        Command::Del(index) => {
+            {
+            let mut kernel_guard = kernel.lock().unwrap();
+            kernel_guard.mark_for_deletion(current_node.clone(), index);
+            }
+            println!("Marked index {} for deletion.", index);
+        }
+        Command::Create(path, is_file) => {
+            {
+            let mut kernel_guard = kernel.lock().unwrap();
+            
+            kernel_guard.create(current_node.clone(), path.clone(), is_file);
+            }
+            println!("Created {}.", path);
+        }
+        Command::Move(original_path, new_path) => {
+            {
+                let mut kernel_guard = kernel.lock().unwrap();
+            
+                // Get absolute paths
+                let abs_original_path = if original_path.starts_with('/') {
+                    original_path.to_string()
+                } else {
+                    let mut abs_path = current_node.lock().unwrap().get_path().to_string_lossy().to_string();
+                    abs_path.push('/');
+                    abs_path.push_str(&original_path);
+                    abs_path
+                };
+            
+                let abs_new_path = if new_path.starts_with('/') {
+                    new_path.to_string()
+                } else {
+                    let mut abs_path = current_node.lock().unwrap().get_path().to_string_lossy().to_string();
+                    abs_path.push('/');
+                    abs_path.push_str(&new_path);
+                    abs_path
+                };
+            
+                // Perform the move
+                kernel_guard.move_item(abs_original_path.clone(), abs_new_path.clone());
+            }
+            
+            println!("Moved {} to {}.", original_path, new_path);
+        }
+        
+        Command::Undo(index) => {
+            {let mut kernel_guard = kernel.lock().unwrap();
+            kernel_guard.undo_deletion(index);}
+            println!("Undid deletion of index {}.", index);
+        }
+        Command::Display => {
+            let display = {
+                let kernel_guard = kernel.lock().unwrap();
+                kernel_guard.display(current_node.clone())
+            };
+            println!("{}", display);
+        }
+        Command::Up => {
+            let (response, new_node) = {
+                let kernel_guard = kernel.lock().unwrap(); // Lock the kernel
+                if let Some(parent) = kernel_guard.get_parent(current_node.clone()) {
+                    if let Some(upgraded) = parent.upgrade() {
+                        ("Moved up to parent directory.".to_string(), Some(upgraded)) // Success case
+                    } else {
+                        ("Error upgrading parent reference.".to_string(), None) // Failed to upgrade
+                    }
+                } else {
+                    ("Already at the root directory.".to_string(), None) // No parent exists
+                }
+            }; // End of the scope for the lock
+        
+            if let Some(new_node) = new_node {
+                println!("{}", response);
+                return new_node; // Return the updated parent node
+            } else {
+                println!("{}", response);
+            }
+        
+        }
+        Command::Down(index) => {
+            let (response, child) = {
+                let kernel_guard = kernel.lock().unwrap();
+                if let Some(child_node) = kernel_guard.get_child(current_node.clone(), index) {
+                    ("Moved down to child directory.".to_string(), Some(child_node))
+                } else {
+                    ("Invalid child index.".to_string(), None)
+                }
+            };
+
+            if let Some(new_node) = child {
+                println!("{}", response);
+                return new_node; // Return the updated parent node
+            } else {
+                println!("{}", response);
+            }
+        }
+        Command::Commit => {
+            {let mut kernel_guard = kernel.lock().unwrap();
+            kernel_guard.commit_actions();}
+            println!("Committed all actions.");
+        }
+        Command::Status => {
+            let status = {
+                let kernel_guard = kernel.lock().unwrap();
+                kernel_guard.get_status()
+            };
+            println!("{}", status);
+        }
+        Command::GoTo(path) => {
+            let (response, node) = {
+                let kernel_guard = kernel.lock().unwrap();
+                if let Some(node) = kernel_guard.go_to(path.clone()) {
+                    (format!("Navigated to {}.", path), Some(node))
+                } else {
+                    (format!("Invalid path: {}.", path), None)
+                }
+            };
+
+            if let Some(new_node) = node {
+                println!("{}", response);
+                return new_node;
+            } else {
+                println!("{}", response);
+            }
+
+        }
+        Command::Open(index) => {
+            {let kernel_guard = kernel.lock().unwrap();
+            kernel_guard.open_file(current_node.clone(), index);}
+            println!("Opened file at index {}.", index);
+        }
+        Command::Help => {
+            let help_message = r#"
+        Available Commands:
+        1. `..` - Moves up one level.
+        2. `<index>` - Moves down to the child at the specified index.
+        3. `go to <path>` - Navigates to the specified path.
+        4. `commit` - Commits the current state.
+        5. `undo <index>` - Reverts to a specific commit index.
+        6. `status` - Displays the current status.
+        7. `display` - Displays content or structure at the current level.
+        8. `create file <name>` - Creates a file with the specified name.
+        9. `create folder <name>` - Creates a folder with the specified name.
+        10. `del <index>` - Deletes the item at the specified index.
+        11. `open <index>` - Opens the item at the specified index.
+        12. `move <source> > <destination>` - Moves an item from source to destination.
+        13. `help` - Displays this help message.
+        "#;
+            println!("{}", help_message.to_string());
+        }
+        Command::AISuggestion(input) => {
+            let context = {
+                let kernel_guard = kernel.lock().unwrap();
+                kernel_guard.display(current_node.clone())
+            };
+            let response = ai::ask(input, context).await;
+            
+            let suggestion: String = {
+                if let Some(sug) = response {
+                    kernel.lock().unwrap().set_suggestion(sug.clone());
+                    sug
+                } else {
+                    "No Suggestions".to_string()
+                }
+            };
+
+            println!("{}", suggestion);
+
+        }
+        Command::AIConfirm => {
+            {kernel.lock().unwrap().convert_suggestions(current_node.clone());}
+
+            println!("Applied suggestions (Still needs to be committed)");
+        }
+        Command::Exit => {
+            println!("Exiting backend.");
+        }
+        _ => {
+            println!("Unknown command.");
+        }
+    }
+
+    // Return the current node if no change
+    current_node
 }

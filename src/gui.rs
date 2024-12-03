@@ -1,11 +1,8 @@
 use eframe::egui;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
-use crate::system::FileSystemNode;
-use crate::kernel::Kernel;
 use crate::threads::*;
 
 pub fn run_app(to_backend: mpsc::Sender<Command>, from_backend: mpsc::Receiver<BackendResponse>) -> Result<(), eframe::Error> {
@@ -21,7 +18,7 @@ pub fn run_app(to_backend: mpsc::Sender<Command>, from_backend: mpsc::Receiver<B
 enum PageState {
     Home,
     Load { directory: String, display_text: String },
-    Files { directory: String, display_text: String, input_text: String, response_text: String },
+    Files { directory: String, display_text: String, input_text: String, response_text: String, ai_input: String, ai_output: String},
 }
 
 struct AppState {
@@ -83,6 +80,8 @@ impl MyApp {
                 display_text: String::new(),
                 input_text: String::new(),
                 response_text: String::new(),
+                ai_input: String::new(),
+                ai_output: String::new(),
             };
         }
     }
@@ -129,6 +128,8 @@ impl MyApp {
                         display_text: String::new(),
                         input_text: String::new(),
                         response_text: String::new(),
+                        ai_input: String::new(),
+                        ai_output: String::new()
                     };
                 }
             }
@@ -151,18 +152,29 @@ impl MyApp {
             display_text,
             input_text,
             response_text,
+            ai_input,
+            ai_output,
             ..
         } = &mut self.state.borrow_mut().current_page
         {
             // Display file content
             egui::ScrollArea::vertical()
                 .max_height(ui.available_height() * 0.9)
+                .max_width(ui.available_width() * 0.7)
+                .stick_to_bottom(true)
                 .show(ui, |ui| {
                     ui.label(display_text.clone());
                 });
     
-            // Input for commands
-            if ui.text_edit_singleline(input_text).lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            let input_id = ui.make_persistent_id("command_input");
+
+            // Render the input field and check for Enter key
+            let response = egui::TextEdit::singleline(input_text)
+                .id(input_id)
+                .show(ui);
+            
+            // Check if the Enter key was pressed and handle input
+            if response.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let trimmed_input = input_text.trim();
                 if !trimmed_input.is_empty() {
                     let command = parse_command(trimmed_input);
@@ -171,11 +183,51 @@ impl MyApp {
                     }
                     input_text.clear();
                 }
+
+                // Reapply focus to the input field
+                ui.memory_mut(|mem| mem.request_focus(input_id));
             }
-            // Display response text
-            if !response_text.is_empty() {
-                ui.label(egui::RichText::new(response_text.clone()).italics());
-            }
+
+            egui::Area::new("top_right_box")
+            .fixed_pos(egui::Pos2::new(ui.available_width() * (1.0 - 0.28), 0.0))
+            .show(ui.ctx(), |ui| {
+                ui.heading("ai");
+                egui::ScrollArea::vertical()
+                    .max_height(ui.available_height() * 0.9)
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        ui.label(ai_output.clone());
+                    });
+                let ai_input_id = ui.make_persistent_id("ai command_input");
+
+                // Render the input field and check for Enter key
+                let ai_response = egui::TextEdit::singleline(ai_input)
+                    .id(ai_input_id)
+                    .show(ui);
+                
+                // Check if the Enter key was pressed and handle input
+                if ai_response.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    let trimmed_input = ai_input.trim();
+                    if !trimmed_input.is_empty() {
+                        let command = Command::AISuggestion(trimmed_input.to_string());
+                        if let Err(err) = self.to_backend.try_send(command) {
+                            *response_text = format!("Error sending command: {}", err);
+                        }
+                        ai_input.clear();
+                    }
+
+                    // Reapply focus to the input field
+                    ui.memory_mut(|mem| mem.request_focus(ai_input_id));
+                }
+
+                if ui.button("apply suggestions").clicked() {
+                    let command = Command::AIConfirm;
+                    if let Err(err) = self.to_backend.try_send(command) {
+                        *response_text = format!("Error sending command: {}", err);
+                    }
+                }
+
+            });
         }
 
         if ui.button("Back to Home").clicked() {
@@ -197,7 +249,14 @@ impl MyApp {
                 BackendResponse::Response(data) => {
                     // Handle successful response, update state or UI
                     if let PageState::Files { display_text, .. } = &mut self.state.borrow_mut().current_page {
-                        *display_text = data;
+                        display_text.push('\n');
+                        display_text.push_str(&data);
+                    }
+                }
+                BackendResponse::AIResponse(message) => {
+                    if let PageState::Files { ai_output, .. } = &mut self.state.borrow_mut().current_page {
+                        ai_output.push('\n');
+                        ai_output.push_str(&message);
                     }
                 }
                 BackendResponse::Error(error) => {
