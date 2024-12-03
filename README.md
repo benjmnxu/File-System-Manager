@@ -1,13 +1,3 @@
-README describes
-each feature
-implemented
-● Quantitative or qualitative results are clearly displayed with instructions demonstrating how to reproduce the results
-● (For a command line tool) example invocations and expected output
-● (For a data science package) Instructions for downloading a dataset as well as expected results on that dataset
-● (For a game) example screenshots and guide to build and run
-● (For project with non-cargo dependencies) a docker container with necessary dependencies
-● (For non-trivially reproducible projects e.g. hardware) images or videos demonstrating projects in action
-
 The implemeneted project is file management tool for MacOS (only MacOS). The product primarily seeks to de-abstract the APFS (Apple File System) in order for users to directly locate and manage files. Cleanups can either be manually or AI-powered.
 
 Once cloned, there are three CLI flags to consider: `--gui-mode`, `--action-file`, and `--dry`.
@@ -56,4 +46,9 @@ After loading the filesystem, you will have access to the following commands:
 
 `<index>` refers to an integer while all others should be Strings.
 
+These commands allow you to freely crawl through and manipulate your local file system. Every change you command will initially be put into an actions queue, which you can view with `status`.
+For these queued actions, `commit` causes digital changes be reflected in the local file system. On the gui, you will be able to use GPT to help you manage and clean your file system. The current
+directory in which you are in serves as the context for the LLM and all AI changes will be for the targeted directory.
+
 Operational Example: https://youtu.be/fxL_ETcNYUM
+
