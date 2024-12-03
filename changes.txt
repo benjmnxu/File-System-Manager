@@ -1,1 +1,1 @@
-DELETE /Users/benjaminxu/Desktop/ohq
+DELETE /Users/benjaminxu/Desktop/main.py 01-28-10-728.py

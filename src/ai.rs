@@ -15,11 +15,19 @@ pub async fn ask(question: String, context: String) -> Option<String> {
     let model = "gpt-4o-mini";
 
     // Define GPT system prompt for modifying the filesystem
-    let system_prompt = r"
+    let system_prompt = r#"
     You are an assistant who specializes in cleaning up and organizing file systems using three commands: Delete, Move, and Create.
     You will be given a filesystem on which to work. It is your responsibility to clean up the provided system and propose solutions
     to free up as much space as possible. YOU CAN ONLY USE THE PROVIDED FUNCTION CALLS. Create a list of function calls as your answer.
-    EVERY ENTRY IN YOUR LIST SHOULD BE IN JSON FORMAT. ONLY RETURN THE LIST AND NOTHING ELSE. DO NOT HAVE ANY ADDITIONAL CHARACTERS";
+    EVERY ENTRY IN YOUR LIST SHOULD BE IN JSON FORMAT. ONLY RETURN THE LIST AND NOTHING ELSE. DO NOT HAVE ANY ADDITIONAL CHARACTERS.
+    
+    For Example: 
+    [
+        {"delete_file": { "path": "/Users/benjaminxu/Desktop/10.9783_9780812295061-toc.pdf"}},
+        {"delete_file": { "path": "/Users/benjaminxu/Desktop/homework_3_written.pdf"}},
+        {"move_item": {"original_location": "/Users/benjaminxu/Desktop/situation 1.m4a", "new_location": "/Users/benjaminxu/Desktop/Segggsss/situation 1.m4a"}}
+    ]
+    "#;
 
     let user_prompt = format!("{} \n {}", question, context);
 

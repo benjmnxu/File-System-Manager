@@ -24,15 +24,17 @@ The first step should always be specifying the root on which the application sho
 
 On gui:
 
-![performance image](images/gui-load.png "Optional title")
+![performance image](media/gui-load.png "Optional title")
 
 On cli:
 
-![performance image](images/cli-load.png "Optional title")
+![performance image](media/cli-load.png "Optional title")
 
 This file load should be relatively quick depending on the size of your specified location and computer. On my hardware, I get the following results:
 
-![performance image](images/performance.png "Optional title")
+![performance image](media/performance.png "Optional title")
+
+As a sidenote, this is achieved using rayon and C-bindings. Using parallelized Rust-native WalkDir takes significantly longer (around 10 minutes).
 
 
 After loading the filesystem, you will have access to the following commands:
@@ -53,3 +55,5 @@ After loading the filesystem, you will have access to the following commands:
 ```
 
 `<index>` refers to an integer while all others should be Strings.
+
+Operational Example: https://youtu.be/fxL_ETcNYUM
