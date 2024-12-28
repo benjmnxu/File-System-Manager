@@ -13,6 +13,7 @@ pub enum Command {
     Status,
     Open(usize),
     GoTo(String),
+    Find(String),
     Exit,
     Error(String),
     AISuggestion(String),
@@ -76,30 +77,30 @@ pub fn parse_command(input: &str) -> Command {
         }
     } else if input.starts_with("go to ") {
         if let Ok(path) = input[6..].trim().parse::<String>() {
-            Command::GoTo(path)
-        } else {
-            Command::Error("Invalid command".to_string())
+            return Command::GoTo(path);
         }
+        Command::Error("Invalid command".to_string())
+        
+    } else if input.starts_with("find ") {
+        if let Ok(item_name) = input[5..].trim().parse::<String>() {
+            return Command::Find(item_name)
+        } 
+        Command::Error("Invalid command".to_string())
+        
     } else if input.starts_with("create ") {
         if let Ok(item_type) = input[7..].trim().parse::<String>() {
             if item_type.starts_with("file ") {
                 if let Ok(file_name) = item_type[5..].trim().parse::<String>() {
-                    Command::Create(file_name, true)
-                } else {
-                    Command::Error("Invalid command".to_string())
+                    return Command::Create(file_name, true);
                 }
             } else if item_type.starts_with("folder ") {
                 if let Ok(file_name) = item_type[7..].trim().parse::<String>() {
-                    Command::Create(file_name, false)
-                } else {
-                    Command::Error("Invalid command".to_string())
+                    return Command::Create(file_name, false);
                 }
-            } else {
-                Command::Error("Invalid command".to_string())
             }
-        } else {
-            Command::Error("Invalid command".to_string())
         }
+        Command::Error("Invalid command".to_string())
+        
     } else if input.starts_with("move ") {
         if let Ok(paths) = input[5..].trim().parse::<String>() {
             let paths_vec: Vec<&str> = paths.split(">").collect();

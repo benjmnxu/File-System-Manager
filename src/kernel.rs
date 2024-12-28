@@ -292,7 +292,8 @@ impl Kernel {
             match fs::remove_dir_all(&path) {
                 Ok(_) => {
                     println!("Deleted directory: {}", path.display());
-                    prune(target);
+                    prune(target.clone());
+                    disown(target);
                 },
                 Err(e) => eprintln!("Failed to delete directory {}: {}", path.display(), e),
             }

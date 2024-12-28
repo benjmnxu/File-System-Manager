@@ -111,7 +111,7 @@ async fn handle_command(
     current_node: Arc<Mutex<FileSystemNode>>,
     to_gui: &mpsc::Sender<BackendResponse>,
 ) -> Arc<Mutex<FileSystemNode>> {
-    println!("Handling command");
+    println!("Handling command async");
 
     match command {
         Command::Del(index) => {
@@ -242,6 +242,20 @@ async fn handle_command(
                 send_error(to_gui, response).await;
             }
 
+        }
+        Command::Find(name) => {
+            let response =  {
+                let kernel_guard = kernel.lock().unwrap();
+                let full_name = format!("{}/{}", current_node.lock().unwrap().get_path().to_string_lossy().to_string(), name);
+                if let Some(index) = kernel_guard.get_index(current_node.clone(), full_name) {
+                    index.to_string()
+                } else {
+                    format!("No such item name: {}.", name)
+                }
+            };
+            
+            send_response(to_gui, response).await;
+            
         }
         Command::Open(index) => {
             {let kernel_guard = kernel.lock().unwrap();
@@ -374,7 +388,7 @@ async fn sync_handle_command(
     kernel: Arc<Mutex<Kernel>>,
     current_node: Arc<Mutex<FileSystemNode>>,
 ) -> Arc<Mutex<FileSystemNode>> {
-    println!("Handling command");
+    println!("Handling command sync");
 
     match command {
         Command::Del(index) => {
@@ -502,6 +516,12 @@ async fn sync_handle_command(
                 println!("{}", response);
             }
 
+        }
+        Command::Find(name) => {
+            let kernel_guard = kernel.lock().unwrap();
+            if let Some(index) = kernel_guard.get_index(current_node.clone(), name) {
+                println!("{}", index);
+            }
         }
         Command::Open(index) => {
             {let kernel_guard = kernel.lock().unwrap();

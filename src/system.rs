@@ -160,15 +160,13 @@ pub fn disown(node: Arc<Mutex<FileSystemNode>>) {
 
 pub fn prune(node: Arc<Mutex<FileSystemNode>>) {
     // Recursively prune children
-    {
-        let children = node.lock().unwrap().children.drain(..).collect::<Vec<_>>();
-        for child in children {
-            prune(child);
-        }
+    let children = node.lock().unwrap().children.drain(..).collect::<Vec<_>>();
+    for child in children {
+        prune(child);
     }
-
-    disown(node);
+    
 }
+
 pub async fn build_fs_model(path: String) -> Option<Arc<Mutex<FileSystemNode>>> {
     // Initialize a map to store nodes by path
     let mut nodes: HashMap<String, Arc<Mutex<FileSystemNode>>> = HashMap::new();
